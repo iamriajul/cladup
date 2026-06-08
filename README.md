@@ -140,12 +140,16 @@ CLADUP_FORCE_PACKAGE_RUNNER=1 cladup -p "question"
 CLADUP_PACKAGE_RUNNER=npx cladup -p "question"
 CLADUP_PACKAGE_RUNNER=bunx cladup --version
 CLADUP_DEFAULT_PERMISSION_MODE=acceptEdits cladup -p "question"
+CLADUP_DB="$HOME/.local/state/cladup/history.sqlite" cladup -p "question"
 ```
 
 `CLADUP_PACKAGE_RUNNER` can be `npx`, `bunx`, `bun`, or `auto`. `npx` is the
 default because it reliably runs the current Claude Code package in tested
 environments. Bun may be faster for some packages, but it did not reliably
 resolve `@anthropic-ai/claude-code@2.1.150` during local verification.
+
+Turn logging is disabled by default. Set `CLADUP_DB` or pass `--cladup-db` only
+if you want a local SQLite history of prompts and replies.
 
 ## Troubleshooting
 

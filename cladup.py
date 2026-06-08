@@ -204,9 +204,7 @@ class PrintOptions:
         self.from_pr = ""
         self.fork_session = False
         self.cwd = os.getcwd()
-        self.db = os.environ.get(
-            "CLADUP_DB", os.path.join(os.getcwd(), "cladup.sqlite")
-        )
+        self.db = os.environ.get("CLADUP_DB", "")
         self.history = False
         self.history_limit = 10
         self.full_auto = False
@@ -606,6 +604,9 @@ def session_lock(name: str):
 
 
 def init_db(db_path: str) -> sqlite3.Connection:
+    directory = os.path.dirname(db_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
     con = sqlite3.connect(db_path)
     con.execute(
         """CREATE TABLE IF NOT EXISTS responses(
@@ -637,6 +638,8 @@ def _log_turn(
     seconds: float,
     meta: dict[str, int | str],
 ) -> None:
+    if not db_path:
+        return
     con = init_db(db_path)
     con.execute(
         "INSERT INTO responses VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -658,6 +661,11 @@ def _log_turn(
 
 
 def show_history(db_path: str, n: int) -> int:
+    if not db_path:
+        sys.stderr.write(
+            "[cladup] no database configured; use --cladup-db or CLADUP_DB\n"
+        )
+        return 0
     if not os.path.exists(db_path):
         sys.stderr.write("[cladup] no database yet\n")
         return 0
@@ -1281,7 +1289,7 @@ Only -p/--print is intercepted and emulated through the interactive TUI.
 
 cladup-specific options:
   --cladup-help                 Show this help
-  --cladup-db <path>            SQLite turn log for emulated print mode
+  --cladup-db <path>            Opt-in SQLite turn log for print mode
   --cladup-history              Show recent emulated print-mode turns
   --cladup-history-limit <n>    History rows to show (default: 10)
   --cwd <dir>                   Run Claude from this directory in print mode
@@ -1293,6 +1301,7 @@ Environment:
                                   Seconds to wait for an assistant record
   CLADUP_PACKAGE_RUNNER=npx     Package runner: npx, bunx, bun, or auto
   CLADUP_AUTH_PREFLIGHT=1       Probe auth with `claude config list` first
+  CLADUP_DB=<path>              Opt-in SQLite turn log path
 
 Use `cladup --help` or `claude --help` for the official Claude CLI help.
 """

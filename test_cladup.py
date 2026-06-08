@@ -281,4 +281,29 @@ finally:
     else:
         os.environ["CLADUP_AUTH_PREFLIGHT"] = auth_preflight_before
 
+with tempfile.TemporaryDirectory() as directory:
+    default_db = os.path.join(directory, "cladup.sqlite")
+    cladup._log_turn(
+        "",
+        "turn",
+        "session",
+        "prompt",
+        "reply",
+        1.0,
+        cladup._meta(False, False),
+    )
+    check("turn logging disabled without db path", not os.path.exists(default_db))
+
+    explicit_db = os.path.join(directory, "nested", "history.sqlite")
+    cladup._log_turn(
+        explicit_db,
+        "turn",
+        "session",
+        "prompt",
+        "reply",
+        1.0,
+        cladup._meta(False, False),
+    )
+    check("turn logging creates explicit db", os.path.exists(explicit_db))
+
 print("\nall passed")
