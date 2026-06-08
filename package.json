@@ -1,0 +1,38 @@
+{
+  "name": "cladup",
+  "version": "0.1.0",
+  "description": "Drop-in Claude CLI shim that emulates claude -p through the interactive Claude Code TUI.",
+  "license": "MIT",
+  "homepage": "https://github.com/iamriajul/cladup#readme",
+  "bugs": {
+    "url": "https://github.com/iamriajul/cladup/issues"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "cli",
+    "shim",
+    "vibe-kanban",
+    "tmux"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iamriajul/cladup.git"
+  },
+  "bin": {
+    "cladup": "./cladup.py",
+    "claude": "./cladup.py"
+  },
+  "scripts": {
+    "test": "python3 test_cladup.py"
+  },
+  "files": [
+    "cladup.py",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=16"
+  }
+}

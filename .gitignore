@@ -1,0 +1,10 @@
+__pycache__/
+.pytest_cache/
+node_modules/
+.code-review-graph/
+.DS_Store
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+npm-debug.log*
+package-lock.json

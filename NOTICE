@@ -1,0 +1,13 @@
+cladup includes code and architecture adapted from clawp:
+
+  https://github.com/ishmum123/clawp
+
+clawp is licensed under the MIT License.
+
+  Copyright (c) 2026 Ishmum Jawad Khan
+
+The adapted pieces are the tmux-backed interactive Claude Code launch,
+transcript tailing, terminal stop detection, screen-idle fallback, and
+Claude Code version fallback strategy. cladup changes the interface contract:
+it is a full Claude CLI shim for npx/GitHub usage, and only intercepts
+-p/--print invocations.
