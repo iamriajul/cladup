@@ -183,6 +183,18 @@ check(
     cladup.final_answer([asst("tool_use", [TOOL_USE]), asst("end_turn", [txt("ok")])])
     == "ok",
 )
+check(
+    "assistant activity ignores transcript noise",
+    not cladup.has_assistant_activity(
+        [{"type": "user", "message": {"content": "x"}}, {"type": "attachment"}]
+    ),
+)
+check(
+    "assistant activity detects assistant records",
+    cladup.has_assistant_activity(
+        [{"type": "user", "message": {"content": "x"}}, asst("end_turn", [txt("ok")])]
+    ),
+)
 
 stream_opts = cladup.PrintOptions()
 check(
@@ -258,9 +270,9 @@ with tempfile.TemporaryDirectory() as directory:
 
 auth_preflight_before = os.environ.get("CLADUP_AUTH_PREFLIGHT")
 try:
-    os.environ["CLADUP_AUTH_PREFLIGHT"] = "0"
+    os.environ.pop("CLADUP_AUTH_PREFLIGHT", None)
     check(
-        "auth preflight can be disabled",
+        "auth preflight is disabled by default",
         cladup.auth_preflight_command(["/does/not/exist"], "/tmp") is True,
     )
 finally:

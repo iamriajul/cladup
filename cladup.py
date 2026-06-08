@@ -47,6 +47,7 @@ STABLE_NEEDED = 3
 STALL_SECS = 180
 MAX_TURN = 1800
 READY_TIMEOUT = env_int("CLADUP_READY_TIMEOUT", 120)
+ASSISTANT_START_TIMEOUT = env_int("CLADUP_ASSISTANT_START_TIMEOUT", 90)
 SEND_SETTLE = 0.8
 PANE_W, PANE_H = 220, 50
 
@@ -553,6 +554,10 @@ def final_answer(records: list[dict]) -> str:
     return ""
 
 
+def has_assistant_activity(records: list[dict]) -> bool:
+    return any(rec.get("type") == "assistant" for rec in records)
+
+
 def is_tool_result_user(rec: dict) -> bool:
     if rec.get("type") != "user":
         return False
@@ -799,7 +804,7 @@ def claude_interactive_command(argv0: str) -> list[str]:
 
 
 def auth_preflight_command(cmd: list[str], cwd: str) -> bool:
-    if os.environ.get(AUTH_PREFLIGHT_ENV, "1") == "0":
+    if os.environ.get(AUTH_PREFLIGHT_ENV, "0") != "1":
         return True
     try:
         cp = subprocess.run(
@@ -1166,6 +1171,7 @@ def run_print_turn(opts: PrintOptions, argv0: str) -> int:
             stable = 0
             last_change = start
             seen = offset
+            assistant_started = False
             while time.time() - start < MAX_TURN:
                 if path is None:
                     path, seen = changed_transcript(before, t0)
@@ -1176,6 +1182,8 @@ def run_print_turn(opts: PrintOptions, argv0: str) -> int:
                 done = False
                 for rec in new:
                     seen += 1
+                    if rec.get("type") == "assistant":
+                        assistant_started = True
                     if is_terminal_assistant(rec):
                         answer = assistant_text(rec)
                         turn_error = is_api_error_record(rec)
@@ -1213,7 +1221,14 @@ def run_print_turn(opts: PrintOptions, argv0: str) -> int:
                 if has_spinner(screen):
                     time.sleep(POLL)
                     continue
-                if stable >= STABLE_NEEDED and at_idle_prompt(screen):
+                if not assistant_started and now - start >= ASSISTANT_START_TIMEOUT:
+                    meta = _meta(False, True, note="no assistant response")
+                    raise CwError(
+                        4,
+                        "timeout: prompt was submitted but no assistant response "
+                        f"appeared within {ASSISTANT_START_TIMEOUT}s",
+                    )
+                if assistant_started and stable >= STABLE_NEEDED and at_idle_prompt(screen):
                     break
                 time.sleep(POLL)
             else:
@@ -1274,7 +1289,10 @@ cladup-specific options:
 
 Environment:
   CLADUP_READY_TIMEOUT=120      Seconds to wait for the TUI to become ready
+  CLADUP_ASSISTANT_START_TIMEOUT=90
+                                  Seconds to wait for an assistant record
   CLADUP_PACKAGE_RUNNER=npx     Package runner: npx, bunx, bun, or auto
+  CLADUP_AUTH_PREFLIGHT=1       Probe auth with `claude config list` first
 
 Use `cladup --help` or `claude --help` for the official Claude CLI help.
 """

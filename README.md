@@ -83,8 +83,9 @@ claude config list
 ```
 
 `claude auth status` may show cached account metadata even when real API
-requests fail. `cladup` runs `claude config list` as a preflight before sending
-print-mode prompts so it can fail before spending a request.
+requests fail. `cladup` does not run an auth preflight by default because some
+Claude installs open the interactive UI for `config list`; expired sessions are
+reported from Claude's transcript/API error output instead.
 
 ## Compatibility
 
@@ -132,8 +133,9 @@ stream-json`.
 
 ```sh
 CLADUP_READY_TIMEOUT=180 cladup -p "question"
+CLADUP_ASSISTANT_START_TIMEOUT=120 cladup -p "question"
 CLADUP_CLAUDE_BIN=/Users/riajul/.local/bin/claude cladup -p "question"
-CLADUP_AUTH_PREFLIGHT=0 cladup -p "question"
+CLADUP_AUTH_PREFLIGHT=1 cladup -p "question"
 CLADUP_FORCE_PACKAGE_RUNNER=1 cladup -p "question"
 CLADUP_PACKAGE_RUNNER=npx cladup -p "question"
 CLADUP_PACKAGE_RUNNER=bunx cladup --version
