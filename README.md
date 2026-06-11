@@ -15,14 +15,14 @@ Package release version: `2.1.173`
 Use directly from GitHub:
 
 ```sh
-npx github:iamriajul/cladup --help
-npx github:iamriajul/cladup -p "summarize this diff"
+npx --yes github:iamriajul/cladup --help
+npx --yes github:iamriajul/cladup -p "summarize this diff"
 ```
 
 Use as a Vibe Kanban agent command:
 
 ```sh
-npx github:iamriajul/cladup
+npx --yes github:iamriajul/cladup
 ```
 
 Install globally:
