@@ -1,6 +1,6 @@
 {
   "name": "cladup",
-  "version": "0.1.0",
+  "version": "2.1.173",
   "description": "Drop-in Claude CLI shim that emulates claude -p through the interactive Claude Code TUI.",
   "license": "MIT",
   "homepage": "https://github.com/iamriajul/cladup#readme",
