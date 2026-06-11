@@ -54,7 +54,7 @@ ASSISTANT_START_TIMEOUT = env_int("CLADUP_ASSISTANT_START_TIMEOUT", 90)
 SEND_SETTLE = 0.8
 PANE_W, PANE_H = 220, 50
 
-ASSIST_RE = re.compile(r"^\u23fa\s?")
+ASSIST_RE = re.compile(r"^[\u23fa\u25cf]\s?")
 PROMPT_RE = re.compile(r"^\u276f\s")
 DONE_RE = re.compile(r"\bfor\s+\d+s\b")
 VERSION_RE = re.compile(r"Claude Code v([\d.]+)")
@@ -599,6 +599,59 @@ def is_no_response_record(rec: dict) -> bool:
     )
 
 
+def is_meta_continue_record(rec: dict) -> bool:
+    if rec.get("type") != "user" or not rec.get("isMeta"):
+        return False
+    message = rec.get("message") or {}
+    return text_from_content(message.get("content")).strip() == (
+        "Continue from where you left off."
+    )
+
+
+def strip_trailing_resume_noops(path: str | None, min_records: int = 0) -> int:
+    if not path or not os.path.exists(path):
+        return 0
+    lines = []
+    records = []
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped:
+                    lines.append(line)
+                    records.append(None)
+                    continue
+                lines.append(line)
+                records.append(json.loads(stripped))
+    except (OSError, json.JSONDecodeError):
+        return 0
+
+    removed = 0
+    keep = len(records)
+    while keep - 2 >= min_records:
+        previous = records[keep - 2]
+        current = records[keep - 1]
+        if (
+            isinstance(previous, dict)
+            and isinstance(current, dict)
+            and is_meta_continue_record(previous)
+            and is_no_response_record(current)
+        ):
+            keep -= 2
+            removed += 2
+            continue
+        break
+    if not removed:
+        return 0
+
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.writelines(lines[:keep])
+    except OSError:
+        return 0
+    return removed
+
+
 def is_terminal_assistant(rec: dict) -> bool:
     if rec.get("type") != "assistant":
         return False
@@ -620,6 +673,10 @@ def final_answer(records: list[dict]) -> str:
         if is_terminal_assistant(rec):
             return assistant_text(rec)
     return ""
+
+
+def final_answer_from_path(path: str | None, offset: int) -> str:
+    return final_answer(read_records(path)[offset:])
 
 
 def has_assistant_activity(records: list[dict]) -> bool:
@@ -1309,6 +1366,7 @@ def run_print_turn(opts: PrintOptions, argv0: str) -> int:
                     session_id = session_id_from_transcript(path)
             # Claude can append synthetic resume/setup records while launching.
             # Start watching only after the real prompt has been submitted.
+            strip_trailing_resume_noops(path, offset)
             offset = len(read_records(path)) if path else 0
             send_text(name, prompt)
             if stream and opts.replay_user_messages:
@@ -1379,14 +1437,22 @@ def run_print_turn(opts: PrintOptions, argv0: str) -> int:
                         f"appeared within {ASSISTANT_START_TIMEOUT}s",
                     )
                 if assistant_started and stable >= STABLE_NEEDED and at_idle_prompt(screen):
-                    break
+                    answer = final_answer_from_path(path, offset)
+                    if answer:
+                        break
+                    scraped = scrape_reply(screen)
+                    if scraped:
+                        screen_fallback_version = claude_version(screen)
+                        answer = scraped
+                        screen_fallback = True
+                        break
                 time.sleep(POLL)
             else:
                 meta = _meta(False, True, note="max turn")
                 raise CwError(4, "timeout: turn exceeded MAX_TURN")
 
             if not answer:
-                answer = final_answer(read_records(path)[offset:])
+                answer = final_answer_from_path(path, offset)
             if not answer:
                 screen = capture(name)
                 screen_fallback_version = claude_version(screen)

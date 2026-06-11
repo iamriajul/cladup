@@ -61,6 +61,15 @@ NO_MODEL_IDLE = (
     "  \u23f5\u23f5 accept edits on (shift+tab to cycle) · \u2190 for agents        \u25cf high · /effort\n"
 )
 
+NEW_BULLET_REPLY = (
+    "\u276f Let's build a simple snake game in html\n\n"
+    "\u25cf The project directory is empty (just an initial commit). This is a greenfield snake game.\n"
+    "  Want to try it?\n\n"
+    "\u273b Cooked for 41s\n\n"
+    "--------\n\u276f \n--------\n"
+    "  Model: Sonnet 4.6 | Ctx: 0\n"
+)
+
 
 def check(name, cond):
     assert cond, "FAILED: " + name
@@ -181,6 +190,11 @@ check("old dialog scrollback ignored", not cladup.looks_blocked(SCROLLBACK_DIALO
 check("done idle", cladup.at_idle_prompt(DONE))
 check("no-model status screen is idle", cladup.at_idle_prompt(NO_MODEL_IDLE))
 check("scrape reply", cladup.scrape_reply(DONE) == "2\n3")
+check(
+    "scrape reply supports v2.1.173 bullet",
+    cladup.scrape_reply(NEW_BULLET_REPLY)
+    == "The project directory is empty (just an initial commit). This is a greenfield snake game.\nWant to try it?",
+)
 TOOL_THEN_REPLY = (
     "\u23fa Bash(git diff HEAD)\n"
     "  \u23bf diff --git a/file b/file\n\n"
@@ -245,6 +259,20 @@ check("terminal end_turn", cladup.is_terminal_assistant(asst("end_turn", [txt("x
 check("tool_use not terminal", not cladup.is_terminal_assistant(asst("tool_use", [TOOL_USE])))
 check("synthetic no-response detected", cladup.is_no_response_record(NO_RESPONSE))
 check("synthetic no-response not terminal", not cladup.is_terminal_assistant(NO_RESPONSE))
+META_CONTINUE = {
+    "type": "user",
+    "isMeta": True,
+    "message": {
+        "role": "user",
+        "content": [{"type": "text", "text": "Continue from where you left off."}],
+    },
+}
+REAL_USER = {
+    "type": "user",
+    "message": {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+}
+check("meta continue detected", cladup.is_meta_continue_record(META_CONTINUE))
+check("real user is not meta continue", not cladup.is_meta_continue_record(REAL_USER))
 check(
     "api error record detected",
     cladup.is_api_error_record({"type": "assistant", "isApiErrorMessage": True}),
@@ -258,6 +286,17 @@ check(
     cladup.final_answer([asst("tool_use", [TOOL_USE]), asst("end_turn", [txt("ok")])])
     == "ok",
 )
+with tempfile.NamedTemporaryFile("w+", encoding="utf-8", delete=False) as handle:
+    transcript_path = handle.name
+    handle.write(json.dumps(asst("tool_use", [TOOL_USE])) + "\n")
+    handle.write(json.dumps(asst("end_turn", [txt("done")])) + "\n")
+try:
+    check(
+        "final answer read from transcript path",
+        cladup.final_answer_from_path(transcript_path, 0) == "done",
+    )
+finally:
+    os.unlink(transcript_path)
 check(
     "final answer skips synthetic no-response",
     cladup.final_answer([asst("end_turn", [txt("ok")]), NO_RESPONSE]) == "ok",
@@ -286,6 +325,35 @@ check("synthetic no-response stream skipped", cladup.stream_event(NO_RESPONSE, s
 synthetic = cladup.synthetic_assistant_event("sid", "answer", "2.1.173")
 check("synthetic assistant has text", cladup.assistant_text(synthetic) == "answer")
 check("synthetic assistant terminal", cladup.is_terminal_assistant(synthetic))
+
+with tempfile.NamedTemporaryFile("w+", encoding="utf-8", delete=False) as handle:
+    transcript_path = handle.name
+    handle.write(json.dumps(REAL_USER) + "\n")
+    handle.write(json.dumps(META_CONTINUE) + "\n")
+    handle.write(json.dumps(NO_RESPONSE) + "\n")
+try:
+    check(
+        "trailing resume noops stripped",
+        cladup.strip_trailing_resume_noops(transcript_path, 1) == 2,
+    )
+    with open(transcript_path, encoding="utf-8") as handle:
+        remaining = [json.loads(line) for line in handle if line.strip()]
+    check("real transcript record preserved", remaining == [REAL_USER])
+finally:
+    os.unlink(transcript_path)
+
+with tempfile.NamedTemporaryFile("w+", encoding="utf-8", delete=False) as handle:
+    transcript_path = handle.name
+    handle.write(json.dumps(REAL_USER) + "\n")
+    handle.write(json.dumps(META_CONTINUE) + "\n")
+    handle.write(json.dumps(NO_RESPONSE) + "\n")
+try:
+    check(
+        "resume noops before min boundary preserved",
+        cladup.strip_trailing_resume_noops(transcript_path, 3) == 0,
+    )
+finally:
+    os.unlink(transcript_path)
 
 check("parse Claude Code banner version", cladup.parse_claude_cli_version("Claude Code v2.1.159") == "2.1.159")
 check("unversioned package", cladup.claude_code_npx_package("") == "@anthropic-ai/claude-code")
