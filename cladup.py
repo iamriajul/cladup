@@ -362,6 +362,7 @@ def ensure_session(
 def clear_input(name: str) -> None:
     tmux_checked("send-keys", "-t", name, "Escape")
     tmux_checked("send-keys", "-t", name, "C-u")
+    time.sleep(0.2)
 
 
 def compact_visible(text: str) -> str:
@@ -409,6 +410,15 @@ def prompt_in_current_input(screen: str, text: str) -> bool:
     return any(probe and probe in compact_line for probe in probes)
 
 
+def wait_for_prompt_in_current_input(name: str, text: str, seconds: float = 2.0) -> bool:
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if prompt_in_current_input(capture(name), text):
+            return True
+        time.sleep(0.2)
+    return prompt_in_current_input(capture(name), text)
+
+
 def submit_current_input(name: str, text: str) -> None:
     tmux_checked("send-keys", "-t", name, "Enter")
     time.sleep(1.5)
@@ -440,22 +450,23 @@ def load_tmux_buffer(text: str) -> None:
 def paste_prompt(name: str, text: str) -> None:
     load_tmux_buffer(text)
     tmux_checked("paste-buffer", "-p", "-t", name)
-    time.sleep(0.4)
-    if prompt_in_current_input(capture(name), text):
+    if wait_for_prompt_in_current_input(name, text):
         return
 
     clear_input(name)
+    if wait_for_prompt_in_current_input(name, text, 0.6):
+        return
     load_tmux_buffer(text)
     tmux_checked("paste-buffer", "-t", name)
-    time.sleep(0.4)
-    if prompt_in_current_input(capture(name), text):
+    if wait_for_prompt_in_current_input(name, text):
         return
 
     if "\n" not in text:
         clear_input(name)
+        if wait_for_prompt_in_current_input(name, text, 0.6):
+            return
         tmux_checked("send-keys", "-l", "-t", name, text)
-        time.sleep(0.4)
-        if prompt_in_current_input(capture(name), text):
+        if wait_for_prompt_in_current_input(name, text):
             return
 
     raise CwError(
@@ -1110,6 +1121,27 @@ def text_from_content(content) -> str:
     return "".join(parts)
 
 
+def same_prompt_text(a: str, b: str) -> bool:
+    return compact_visible(a) == compact_visible(b)
+
+
+def append_prompt_part(parts: list[str], text: str) -> None:
+    text = text.strip()
+    if not text:
+        return
+    if parts and same_prompt_text(parts[-1], text):
+        return
+    parts.append(text)
+
+
+def merge_prompt_parts(first: str, second: str) -> str:
+    first = first.strip()
+    second = second.strip()
+    if first and second:
+        return first if same_prompt_text(first, second) else f"{first}\n\n{second}"
+    return first or second
+
+
 def prompt_from_stream_json(stdin_text: str, opts: PrintOptions) -> str:
     parts = []
     for line in stdin_text.splitlines():
@@ -1122,12 +1154,13 @@ def prompt_from_stream_json(stdin_text: str, opts: PrintOptions) -> str:
             raise CwError(2, "--input-format stream-json received invalid JSONL")
         if opts.replay_user_messages:
             opts.replay_events.append(rec)
+        if rec.get("isMeta"):
+            continue
         if rec.get("type") != "user":
             continue
         message = rec.get("message") or {}
         text = text_from_content(message.get("content"))
-        if text:
-            parts.append(text)
+        append_prompt_part(parts, text)
     return "\n\n".join(parts).strip()
 
 
@@ -1137,11 +1170,11 @@ def build_prompt(opts: PrintOptions) -> str:
     if opts.input_format == "stream-json":
         prompt = prompt_from_stream_json(stdin_text, opts)
         if positional:
-            prompt = f"{prompt}\n\n{positional}".strip()
+            prompt = merge_prompt_parts(prompt, positional)
     else:
         stdin_body = stdin_text.rstrip("\n")
         if positional and stdin_body:
-            prompt = f"{stdin_body}\n\n{positional}"
+            prompt = merge_prompt_parts(stdin_body, positional)
         elif positional:
             prompt = positional
         else:

@@ -131,6 +131,41 @@ try:
 finally:
     sys.stdin = stdin_before
 
+opts = cladup.PrintOptions()
+opts.input_format = "stream-json"
+stdin_before = sys.stdin
+try:
+    sys.stdin = io.StringIO(json.dumps(stream) + "\n" + json.dumps(stream) + "\n")
+    check("duplicate stream-json prompt deduped", cladup.build_prompt(opts) == "hello")
+finally:
+    sys.stdin = stdin_before
+
+meta_stream = {
+    "type": "user",
+    "isMeta": True,
+    "message": {
+        "role": "user",
+        "content": [{"type": "text", "text": "Continue from where you left off."}],
+    },
+}
+opts = cladup.PrintOptions()
+opts.input_format = "stream-json"
+stdin_before = sys.stdin
+try:
+    sys.stdin = io.StringIO(json.dumps(meta_stream) + "\n" + json.dumps(stream) + "\n")
+    check("meta stream-json user ignored", cladup.build_prompt(opts) == "hello")
+finally:
+    sys.stdin = stdin_before
+
+opts = cladup.PrintOptions()
+opts.positionals = ["hello"]
+stdin_before = sys.stdin
+try:
+    sys.stdin = io.StringIO("hello")
+    check("duplicate stdin and argv prompt deduped", cladup.build_prompt(opts) == "hello")
+finally:
+    sys.stdin = stdin_before
+
 check("spinner detected", cladup.has_spinner(WORKING))
 check("done has no spinner", not cladup.has_spinner(DONE))
 check("release note ellipses are not spinner", not cladup.has_spinner(WHATS_NEW_IDLE))
