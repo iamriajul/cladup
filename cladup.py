@@ -77,6 +77,7 @@ DIALOG_MARKERS = (
 )
 
 TERMINAL_STOP = {"end_turn", "max_tokens", "stop_sequence", "refusal"}
+NO_RESPONSE_REQUESTED = "No response requested."
 NOISE_TYPES = {
     "last-prompt",
     "mode",
@@ -579,8 +580,29 @@ def is_noise(rec: dict) -> bool:
     return rec.get("type") in NOISE_TYPES or is_compaction(rec)
 
 
+def message_text(rec: dict) -> str:
+    blocks = (rec.get("message") or {}).get("content") or []
+    parts = [
+        block.get("text", "")
+        for block in blocks
+        if isinstance(block, dict) and block.get("type") == "text"
+    ]
+    return "".join(parts).strip()
+
+
+def is_no_response_record(rec: dict) -> bool:
+    message = rec.get("message") or {}
+    return (
+        rec.get("type") == "assistant"
+        and message.get("model") == "<synthetic>"
+        and message_text(rec) == NO_RESPONSE_REQUESTED
+    )
+
+
 def is_terminal_assistant(rec: dict) -> bool:
     if rec.get("type") != "assistant":
+        return False
+    if is_no_response_record(rec):
         return False
     return (rec.get("message") or {}).get("stop_reason") in TERMINAL_STOP
 
@@ -590,13 +612,7 @@ def is_api_error_record(rec: dict) -> bool:
 
 
 def assistant_text(rec: dict) -> str:
-    blocks = (rec.get("message") or {}).get("content") or []
-    parts = [
-        block.get("text", "")
-        for block in blocks
-        if isinstance(block, dict) and block.get("type") == "text"
-    ]
-    return "".join(parts).strip()
+    return message_text(rec)
 
 
 def final_answer(records: list[dict]) -> str:
@@ -622,6 +638,8 @@ def is_tool_result_user(rec: dict) -> bool:
 
 def stream_event(rec: dict, opts: PrintOptions) -> dict | None:
     if is_noise(rec):
+        return None
+    if is_no_response_record(rec):
         return None
     if rec.get("type") == "assistant":
         return rec if assistant_text(rec) or opts.include_partial_messages else None
@@ -1285,6 +1303,13 @@ def run_print_turn(opts: PrintOptions, argv0: str) -> int:
                 meta = _meta(False, True, note="launch failed")
                 raise CwError(5, str(exc))
 
+            if path is None:
+                path, _offset = changed_transcript(before, t0)
+                if path:
+                    session_id = session_id_from_transcript(path)
+            # Claude can append synthetic resume/setup records while launching.
+            # Start watching only after the real prompt has been submitted.
+            offset = len(read_records(path)) if path else 0
             send_text(name, prompt)
             if stream and opts.replay_user_messages:
                 for rec in opts.replay_events:
@@ -1307,7 +1332,7 @@ def run_print_turn(opts: PrintOptions, argv0: str) -> int:
                 done = False
                 for rec in new:
                     seen += 1
-                    if rec.get("type") == "assistant":
+                    if rec.get("type") == "assistant" and not is_no_response_record(rec):
                         assistant_started = True
                     if is_terminal_assistant(rec):
                         answer = assistant_text(rec)

@@ -238,9 +238,13 @@ def txt(text):
 
 THINK = {"type": "thinking", "thinking": "private"}
 TOOL_USE = {"type": "tool_use", "name": "Bash", "input": {}}
+NO_RESPONSE = asst("stop_sequence", [txt("No response requested.")])
+NO_RESPONSE["message"]["model"] = "<synthetic>"
 
 check("terminal end_turn", cladup.is_terminal_assistant(asst("end_turn", [txt("x")])))
 check("tool_use not terminal", not cladup.is_terminal_assistant(asst("tool_use", [TOOL_USE])))
+check("synthetic no-response detected", cladup.is_no_response_record(NO_RESPONSE))
+check("synthetic no-response not terminal", not cladup.is_terminal_assistant(NO_RESPONSE))
 check(
     "api error record detected",
     cladup.is_api_error_record({"type": "assistant", "isApiErrorMessage": True}),
@@ -253,6 +257,10 @@ check(
     "final answer chooses terminal",
     cladup.final_answer([asst("tool_use", [TOOL_USE]), asst("end_turn", [txt("ok")])])
     == "ok",
+)
+check(
+    "final answer skips synthetic no-response",
+    cladup.final_answer([asst("end_turn", [txt("ok")]), NO_RESPONSE]) == "ok",
 )
 check(
     "assistant activity ignores transcript noise",
@@ -274,6 +282,7 @@ check(
     == asst("end_turn", [txt("hi")]),
 )
 check("noise stream skipped", cladup.stream_event({"type": "system"}, stream_opts) is None)
+check("synthetic no-response stream skipped", cladup.stream_event(NO_RESPONSE, stream_opts) is None)
 synthetic = cladup.synthetic_assistant_event("sid", "answer", "2.1.173")
 check("synthetic assistant has text", cladup.assistant_text(synthetic) == "answer")
 check("synthetic assistant terminal", cladup.is_terminal_assistant(synthetic))
