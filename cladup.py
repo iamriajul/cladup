@@ -854,6 +854,8 @@ def stream_event(rec: dict, opts: PrintOptions) -> dict | None:
     if rec.get("type") == "user":
         if rec.get("isMeta"):
             return None
+        if not opts.replay_user_messages and not is_tool_result_user(rec):
+            return None
         return normalize_message_event(rec)
     if rec.get("type") == "attachment":
         if opts.verbose or opts.include_hook_events:

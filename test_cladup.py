@@ -349,7 +349,10 @@ user_raw = {
     "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]},
     "sessionId": "sid",
 }
-check("user stream emitted", cladup.stream_event(user_raw, stream_opts)["session_id"] == "sid")
+check("user stream skipped without replay", cladup.stream_event(user_raw, stream_opts) is None)
+stream_opts.replay_user_messages = True
+check("user stream emitted with replay", cladup.stream_event(user_raw, stream_opts)["session_id"] == "sid")
+stream_opts.replay_user_messages = False
 tool_result_raw = {
     "type": "user",
     "message": {"role": "user", "content": [{"type": "tool_result", "content": "ok"}]},
