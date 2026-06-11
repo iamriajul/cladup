@@ -30,6 +30,22 @@ TRUST = (
     "1. Yes, I trust this folder\n2. No, exit\n"
 )
 
+MCP_SELECT = (
+    "2 new MCP servers found in this project\n"
+    "Select any you wish to enable.\n\n"
+    "\u276f [\u2714] code-review-graph\n"
+    "  [\u2714] mempalace\n"
+    "Space to select \u00b7 Enter to confirm \u00b7 Esc to reject all\n"
+)
+
+GENERIC_CONFIRM = (
+    "Accessing workspace:\n\n"
+    " /home/coder/abc\n\n"
+    "\u276f 1. Yes, continue\n"
+    "  2. No, exit\n\n"
+    "Enter to confirm \u00b7 Esc to cancel\n"
+)
+
 WHATS_NEW_IDLE = (
     "Added a prompt before writing to shell startup files that could otherwise lead to unintended command \u2026\n"
     "acceptEdits mode now prompts before writing build-tool config files that grant code execution \u2026\n"
@@ -119,9 +135,29 @@ check("spinner detected", cladup.has_spinner(WORKING))
 check("done has no spinner", not cladup.has_spinner(DONE))
 check("release note ellipses are not spinner", not cladup.has_spinner(WHATS_NEW_IDLE))
 check("trust is blocked", cladup.looks_blocked(TRUST))
+check("trust prompt auto-confirmable", cladup.is_startup_confirm_prompt(TRUST))
+check("mcp prompt auto-confirmable", cladup.is_startup_confirm_prompt(MCP_SELECT))
+check(
+    "enter to confirm prompt auto-confirmable",
+    cladup.is_startup_confirm_prompt(GENERIC_CONFIRM),
+)
+SCROLLBACK_DIALOG = TRUST + ("\nold history\n" * 50) + DONE
+check("old dialog scrollback ignored", not cladup.looks_blocked(SCROLLBACK_DIALOG))
 check("done idle", cladup.at_idle_prompt(DONE))
 check("no-model status screen is idle", cladup.at_idle_prompt(NO_MODEL_IDLE))
 check("scrape reply", cladup.scrape_reply(DONE) == "2\n3")
+TOOL_THEN_REPLY = (
+    "\u23fa Bash(git diff HEAD)\n"
+    "  \u23bf diff --git a/file b/file\n\n"
+    "\u23fa Here's a summary of the diff:\n"
+    "  - README changed\n\n"
+    "--------\n\u276f \n--------\n"
+    "  Model: Sonnet 4.6 | Ctx: 0\n"
+)
+check(
+    "scrape reply uses last assistant block",
+    cladup.scrape_reply(TOOL_THEN_REPLY) == "Here's a summary of the diff:\n- README changed",
+)
 VISIBLE_INPUT = DONE + "\n\n--------\n\u276f CLADUP_DEBUG_DO_NOT_SUBMIT\n--------\n  Model: Sonnet\n"
 check(
     "prompt visible in input area",
@@ -203,6 +239,9 @@ check(
     == asst("end_turn", [txt("hi")]),
 )
 check("noise stream skipped", cladup.stream_event({"type": "system"}, stream_opts) is None)
+synthetic = cladup.synthetic_assistant_event("sid", "answer", "2.1.173")
+check("synthetic assistant has text", cladup.assistant_text(synthetic) == "answer")
+check("synthetic assistant terminal", cladup.is_terminal_assistant(synthetic))
 
 check("parse Claude Code banner version", cladup.parse_claude_cli_version("Claude Code v2.1.159") == "2.1.159")
 check("unversioned package", cladup.claude_code_npx_package("") == "@anthropic-ai/claude-code")
@@ -236,6 +275,39 @@ with tempfile.TemporaryDirectory() as directory:
         json.dump({"lastReleaseNotesSeen": "2.1.160"}, handle)
     check("claude json fallback", cladup.claude_json_version(directory) == "2.1.160")
 
+version_before = os.environ.get("CLADUP_CLAUDE_VERSION")
+tested_before = os.environ.get("CLADUP_USE_TESTED_VERSION")
+try:
+    os.environ.pop("CLADUP_CLAUDE_VERSION", None)
+    os.environ["CLADUP_USE_TESTED_VERSION"] = "1"
+    check(
+        "tested Claude version selected",
+        cladup.selected_claude_version("/tmp/cladup") == cladup.TESTED_CLAUDE_CODE_VERSION,
+    )
+    os.environ["CLADUP_CLAUDE_VERSION"] = "2.1.999"
+    check(
+        "explicit Claude version wins",
+        cladup.selected_claude_version("/tmp/cladup") == "2.1.999",
+    )
+    stripped = cladup.apply_global_cladup_flags(
+        ["--cladup-tested-version", "--cladup-claude-version=2.1.998", "-p", "q"]
+    )
+    check("global cladup flags stripped", stripped == ["-p", "q"])
+    check(
+        "global cladup version applied",
+        os.environ.get("CLADUP_CLAUDE_VERSION") == "2.1.998"
+        and os.environ.get("CLADUP_USE_TESTED_VERSION") == "1",
+    )
+finally:
+    if version_before is None:
+        os.environ.pop("CLADUP_CLAUDE_VERSION", None)
+    else:
+        os.environ["CLADUP_CLAUDE_VERSION"] = version_before
+    if tested_before is None:
+        os.environ.pop("CLADUP_USE_TESTED_VERSION", None)
+    else:
+        os.environ["CLADUP_USE_TESTED_VERSION"] = tested_before
+
 with tempfile.TemporaryDirectory() as directory:
     fake = os.path.join(directory, "claude")
     with open(fake, "w", encoding="utf-8") as handle:
@@ -244,9 +316,13 @@ with tempfile.TemporaryDirectory() as directory:
     path_before = os.environ.get("PATH", "")
     force_before = os.environ.get("CLADUP_FORCE_PACKAGE_RUNNER")
     runner_before = os.environ.get("CLADUP_PACKAGE_RUNNER")
+    version_before = os.environ.get("CLADUP_CLAUDE_VERSION")
+    tested_before = os.environ.get("CLADUP_USE_TESTED_VERSION")
     try:
         os.environ["PATH"] = directory
         os.environ.pop("CLADUP_FORCE_PACKAGE_RUNNER", None)
+        os.environ.pop("CLADUP_CLAUDE_VERSION", None)
+        os.environ.pop("CLADUP_USE_TESTED_VERSION", None)
         check(
             "interactive launcher prefers real claude",
             cladup.claude_interactive_command("/tmp/cladup") == [fake],
@@ -267,6 +343,14 @@ with tempfile.TemporaryDirectory() as directory:
             os.environ.pop("CLADUP_PACKAGE_RUNNER", None)
         else:
             os.environ["CLADUP_PACKAGE_RUNNER"] = runner_before
+        if version_before is None:
+            os.environ.pop("CLADUP_CLAUDE_VERSION", None)
+        else:
+            os.environ["CLADUP_CLAUDE_VERSION"] = version_before
+        if tested_before is None:
+            os.environ.pop("CLADUP_USE_TESTED_VERSION", None)
+        else:
+            os.environ["CLADUP_USE_TESTED_VERSION"] = tested_before
 
 auth_preflight_before = os.environ.get("CLADUP_AUTH_PREFLIGHT")
 try:

@@ -33,6 +33,9 @@ REAL_CLAUDE_ENV = "CLADUP_CLAUDE_BIN"
 PACKAGE_RUNNER_ENV = "CLADUP_PACKAGE_RUNNER"
 CLAUDE_CODE_PACKAGE = "@anthropic-ai/claude-code"
 AUTH_PREFLIGHT_ENV = "CLADUP_AUTH_PREFLIGHT"
+CLAUDE_VERSION_ENV = "CLADUP_CLAUDE_VERSION"
+USE_TESTED_VERSION_ENV = "CLADUP_USE_TESTED_VERSION"
+TESTED_CLAUDE_CODE_VERSION = "2.1.173"
 
 
 def env_int(name: str, default: int) -> int:
@@ -68,6 +71,9 @@ DIALOG_MARKERS = (
     "trust this folder",
     "Quick safety check",
     "No, and tell Claude",
+    "new MCP servers found",
+    "Select any you wish to enable",
+    "Enter to confirm",
 )
 
 TERMINAL_STOP = {"end_turn", "max_tokens", "stop_sequence", "refusal"}
@@ -263,8 +269,43 @@ def has_spinner(screen: str) -> bool:
     return False
 
 
+def visible_dialog_text(screen: str) -> str:
+    return "\n".join(bottom_lines(screen, 40))
+
+
 def looks_blocked(screen: str) -> bool:
-    return any(marker in screen for marker in DIALOG_MARKERS)
+    visible = visible_dialog_text(screen)
+    return any(marker in visible for marker in DIALOG_MARKERS)
+
+
+def is_trust_prompt(screen: str) -> bool:
+    visible = visible_dialog_text(screen)
+    return "Quick safety check" in visible or "trust this folder" in visible
+
+
+def is_mcp_selection_prompt(screen: str) -> bool:
+    visible = visible_dialog_text(screen)
+    return (
+        "new MCP servers found" in visible
+        and "Select any you wish to enable" in visible
+    )
+
+
+def is_startup_confirm_prompt(screen: str) -> bool:
+    visible = visible_dialog_text(screen)
+    return (
+        "Enter to confirm" in visible
+        or is_trust_prompt(screen)
+        or is_mcp_selection_prompt(screen)
+    )
+
+
+def startup_dialog_label(screen: str) -> str:
+    if is_trust_prompt(screen):
+        return "trust prompt"
+    if is_mcp_selection_prompt(screen):
+        return "MCP selection prompt"
+    return "startup prompt"
 
 
 def at_idle_prompt(screen: str) -> bool:
@@ -299,16 +340,17 @@ def ensure_session(
         *claude_args,
     )
     deadline = time.time() + READY_TIMEOUT
-    trusted = False
     while time.time() < deadline:
         screen = capture(name)
-        if not trusted and (
-            "trust this folder" in screen or "Quick safety check" in screen
-        ):
+        if is_startup_confirm_prompt(screen):
             tmux("send-keys", "-t", name, "Enter")
-            trusted = True
             time.sleep(1.0)
             continue
+        if looks_blocked(screen):
+            raise TimeoutError(
+                f"claude session '{name}' is waiting at an unsupported "
+                f"{startup_dialog_label(screen)}"
+            )
         if at_idle_prompt(screen) and not has_spinner(screen):
             return
         time.sleep(POLL)
@@ -430,9 +472,10 @@ def send_text(name: str, text: str) -> None:
 
 def scrape_reply(screen: str) -> str:
     lines = screen.splitlines()
-    idx = next((i for i, line in enumerate(lines) if ASSIST_RE.match(line)), None)
-    if idx is None:
+    indices = [i for i, line in enumerate(lines) if ASSIST_RE.match(line)]
+    if not indices:
         return ""
+    idx = indices[-1]
     out = [ASSIST_RE.sub("", lines[idx], count=1)]
     for line in lines[idx + 1 :]:
         stripped = line.strip()
@@ -750,6 +793,10 @@ def claude_json_version(home: str | None = None) -> str:
     return parse_claude_cli_version(str(data.get("lastReleaseNotesSeen", "")))
 
 
+def truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def installed_claude_version(argv0: str, home: str | None = None) -> str:
     real = find_real_claude(argv0)
     if real:
@@ -766,6 +813,21 @@ def installed_claude_version(argv0: str, home: str | None = None) -> str:
             if version:
                 return version
     return claude_json_version(home)
+
+
+def selected_claude_version(argv0: str, home: str | None = None) -> str:
+    configured = os.environ.get(CLAUDE_VERSION_ENV, "").strip()
+    if configured:
+        return configured
+    if truthy_env(USE_TESTED_VERSION_ENV):
+        return TESTED_CLAUDE_CODE_VERSION
+    return installed_claude_version(argv0, home)
+
+
+def package_version_forced() -> bool:
+    return bool(os.environ.get(CLAUDE_VERSION_ENV, "").strip()) or truthy_env(
+        USE_TESTED_VERSION_ENV
+    )
 
 
 def claude_code_package(version: str) -> str:
@@ -800,13 +862,17 @@ def package_runner_command(package: str) -> list[str]:
 
 
 def claude_code_command(argv0: str) -> list[str]:
-    package = claude_code_package(installed_claude_version(argv0))
+    package = claude_code_package(selected_claude_version(argv0))
     return package_runner_command(package)
 
 
 def claude_interactive_command(argv0: str) -> list[str]:
     real = find_real_claude(argv0)
-    if real and os.environ.get("CLADUP_FORCE_PACKAGE_RUNNER") != "1":
+    if (
+        real
+        and os.environ.get("CLADUP_FORCE_PACKAGE_RUNNER") != "1"
+        and not package_version_forced()
+    ):
         return [real]
     return claude_code_command(argv0)
 
@@ -1128,6 +1194,22 @@ def result_object(
     }
 
 
+def synthetic_assistant_event(session_id: str, answer: str, version: str = "") -> dict:
+    return {
+        "type": "assistant",
+        "sessionId": session_id,
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "version": version or TESTED_CLAUDE_CODE_VERSION,
+        "synthetic": True,
+        "message": {
+            "role": "assistant",
+            "type": "message",
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": answer}],
+        },
+    }
+
+
 def safe_pane_name(seed: str) -> str:
     safe = re.sub(r"[^0-9A-Za-z_-]", "", seed)
     if not safe:
@@ -1154,6 +1236,8 @@ def run_print_turn(opts: PrintOptions, argv0: str) -> int:
     )
     answer = ""
     turn_error = False
+    screen_fallback = False
+    screen_fallback_version = ""
     meta = _meta(False, False)
     seconds = 0.0
     path = find_transcript(session_id)
@@ -1246,17 +1330,22 @@ def run_print_turn(opts: PrintOptions, argv0: str) -> int:
             if not answer:
                 answer = final_answer(read_records(path)[offset:])
             if not answer:
-                version = claude_version(capture(name))
-                suffix = f" on Claude Code v{version}" if version else ""
-                if fmt == "text":
-                    answer = scrape_reply(capture(name))
-                    meta = _meta(True, False, note="schema unrecognized" + suffix)
+                screen = capture(name)
+                screen_fallback_version = claude_version(screen)
+                answer = scrape_reply(screen)
+                if answer:
+                    screen_fallback = True
                 else:
+                    suffix = (
+                        f" on Claude Code v{screen_fallback_version}"
+                        if screen_fallback_version
+                        else ""
+                    )
                     raise CwError(
                         5,
                         "transcript schema unrecognized"
                         + suffix
-                        + " (zero usable answer; json/stream-json cannot be scraped)",
+                        + " (zero usable answer and screen scrape failed)",
                     )
         finally:
             seconds = round(time.time() - t0, 1)
@@ -1270,6 +1359,15 @@ def run_print_turn(opts: PrintOptions, argv0: str) -> int:
     if fmt == "text":
         print(answer)
     else:
+        if stream and screen_fallback:
+            print(
+                json.dumps(
+                    synthetic_assistant_event(
+                        session_id, answer, screen_fallback_version
+                    )
+                ),
+                flush=True,
+            )
         print(
             json.dumps(result_object(session_id, answer, seconds, turn_error)),
             flush=stream,
@@ -1278,12 +1376,14 @@ def run_print_turn(opts: PrintOptions, argv0: str) -> int:
 
 
 def cladup_help() -> str:
-    return """Usage: cladup [claude options] [command] [prompt]
+    return f"""Usage: cladup [claude options] [command] [prompt]
 
 Drop-in Claude CLI shim.
 
 Normal invocations are passed through to Claude Code via:
   npx -y @anthropic-ai/claude-code[@detected-version]
+
+Last tested Claude Code version: {TESTED_CLAUDE_CODE_VERSION}
 
 Only -p/--print is intercepted and emulated through the interactive TUI.
 
@@ -1292,6 +1392,8 @@ cladup-specific options:
   --cladup-db <path>            Opt-in SQLite turn log for print mode
   --cladup-history              Show recent emulated print-mode turns
   --cladup-history-limit <n>    History rows to show (default: 10)
+  --cladup-tested-version       Use the last tested Claude Code package
+  --cladup-claude-version <v>   Use a specific Claude Code package version
   --cwd <dir>                   Run Claude from this directory in print mode
   --full-auto                   Alias for --permission-mode bypassPermissions
 
@@ -1302,9 +1404,35 @@ Environment:
   CLADUP_PACKAGE_RUNNER=npx     Package runner: npx, bunx, bun, or auto
   CLADUP_AUTH_PREFLIGHT=1       Probe auth with `claude config list` first
   CLADUP_DB=<path>              Opt-in SQLite turn log path
+  CLADUP_USE_TESTED_VERSION=1   Use Claude Code v{TESTED_CLAUDE_CODE_VERSION}
+  CLADUP_CLAUDE_VERSION=<v>     Use a specific Claude Code package version
 
 Use `cladup --help` or `claude --help` for the official Claude CLI help.
 """
+
+
+def apply_global_cladup_flags(argv: list[str]) -> list[str]:
+    out = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--cladup-tested-version":
+            os.environ[USE_TESTED_VERSION_ENV] = "1"
+            i += 1
+            continue
+        if arg == "--cladup-claude-version":
+            if i + 1 >= len(argv):
+                raise CwError(2, "--cladup-claude-version requires a version")
+            os.environ[CLAUDE_VERSION_ENV] = argv[i + 1]
+            i += 2
+            continue
+        if arg.startswith("--cladup-claude-version="):
+            os.environ[CLAUDE_VERSION_ENV] = arg.split("=", 1)[1]
+            i += 1
+            continue
+        out.append(arg)
+        i += 1
+    return out
 
 
 def main(argv: list[str] | None = None, argv0: str | None = None) -> int:
@@ -1312,6 +1440,7 @@ def main(argv: list[str] | None = None, argv0: str | None = None) -> int:
         argv = sys.argv[1:]
     if argv0 is None:
         argv0 = sys.argv[0]
+    argv = apply_global_cladup_flags(argv)
 
     if "--cladup-help" in argv:
         print(cladup_help(), end="")

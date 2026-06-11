@@ -11,6 +11,8 @@ then the answer is read back from Claude's transcript JSONL.
 This is meant for tools such as Vibe Kanban that are built around a single
 Claude command but may internally call print mode.
 
+Last tested Claude Code version: `2.1.173`.
+
 ## Quick Start
 
 Use directly from GitHub:
@@ -68,6 +70,20 @@ npx -y @anthropic-ai/claude-code[@detected-version]
 
 The version is detected from `claude --version` first, then
 `~/.claude.json`'s `lastReleaseNotesSeen`, then left unpinned.
+
+For the most stable package path, use the version tested with this release:
+
+```sh
+cladup --cladup-tested-version -p "question"
+CLADUP_USE_TESTED_VERSION=1 cladup -p "question"
+```
+
+You can also pin an explicit Claude Code package version:
+
+```sh
+cladup --cladup-claude-version 2.1.173 -p "question"
+CLADUP_CLAUDE_VERSION=2.1.173 cladup -p "question"
+```
 
 ## Requirements
 
@@ -141,15 +157,22 @@ CLADUP_PACKAGE_RUNNER=npx cladup -p "question"
 CLADUP_PACKAGE_RUNNER=bunx cladup --version
 CLADUP_DEFAULT_PERMISSION_MODE=acceptEdits cladup -p "question"
 CLADUP_DB="$HOME/.local/state/cladup/history.sqlite" cladup -p "question"
+CLADUP_USE_TESTED_VERSION=1 cladup -p "question"
+CLADUP_CLAUDE_VERSION=2.1.173 cladup -p "question"
 ```
 
 `CLADUP_PACKAGE_RUNNER` can be `npx`, `bunx`, `bun`, or `auto`. `npx` is the
 default because it reliably runs the current Claude Code package in tested
 environments. Bun may be faster for some packages, but it did not reliably
-resolve `@anthropic-ai/claude-code@2.1.150` during local verification.
+resolve `@anthropic-ai/claude-code@2.1.173` during local verification.
 
 Turn logging is disabled by default. Set `CLADUP_DB` or pass `--cladup-db` only
 if you want a local SQLite history of prompts and replies.
+
+During startup, `cladup` automatically presses Enter for Claude Code prompts
+that show `Enter to confirm`, including the project trust prompt and "new MCP
+servers found" prompt. This keeps print mode from hanging at prompts that are
+normally shown before the input box exists.
 
 ## Troubleshooting
 
