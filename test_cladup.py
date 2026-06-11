@@ -120,6 +120,10 @@ check(
     opts.passthrough == ["--permission-mode", "plan"],
 )
 
+opts = cladup.parse_print_argv(["-p", "--verbose", "q"])
+check("verbose parsed", opts.verbose)
+check("verbose preserved", opts.passthrough == ["--verbose"])
+
 opts = cladup.parse_print_argv(["-p", "--unknown-new-flag", "value", "q"])
 check(
     "unknown option value preserved",
@@ -286,6 +290,12 @@ check(
     cladup.final_answer([asst("tool_use", [TOOL_USE]), asst("end_turn", [txt("ok")])])
     == "ok",
 )
+terminal = asst("end_turn", [txt("ok")])
+terminal["message"]["usage"] = {"input_tokens": 1, "output_tokens": 2}
+check("final terminal record found", cladup.final_terminal_record([terminal]) == terminal)
+result = cladup.result_object("sid", "ok", 1.2, False, terminal)
+check("result includes stop reason", result["stop_reason"] == "end_turn")
+check("result includes usage", result["usage"] == {"input_tokens": 1, "output_tokens": 2})
 with tempfile.NamedTemporaryFile("w+", encoding="utf-8", delete=False) as handle:
     transcript_path = handle.name
     handle.write(json.dumps(asst("tool_use", [TOOL_USE])) + "\n")
@@ -315,13 +325,77 @@ check(
 )
 
 stream_opts = cladup.PrintOptions()
+assistant_raw = asst("end_turn", [txt("hi")])
+assistant_raw["sessionId"] = "sid"
+assistant_raw["requestId"] = "req"
 check(
-    "assistant stream emits raw record",
-    cladup.stream_event(asst("end_turn", [txt("hi")]), stream_opts)
-    == asst("end_turn", [txt("hi")]),
+    "assistant stream emits normalized record",
+    cladup.stream_event(assistant_raw, stream_opts)
+    == {
+        "type": "assistant",
+        "message": assistant_raw["message"],
+        "session_id": "sid",
+        "request_id": "req",
+    },
+)
+tool_raw = asst("tool_use", [TOOL_USE])
+tool_raw["sessionId"] = "sid"
+check(
+    "assistant tool use stream emitted",
+    cladup.stream_event(tool_raw, stream_opts)["message"]["content"] == [TOOL_USE],
+)
+user_raw = {
+    "type": "user",
+    "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+    "sessionId": "sid",
+}
+check("user stream emitted", cladup.stream_event(user_raw, stream_opts)["session_id"] == "sid")
+tool_result_raw = {
+    "type": "user",
+    "message": {"role": "user", "content": [{"type": "tool_result", "content": "ok"}]},
+    "toolUseResult": {"success": True},
+}
+check(
+    "tool result key normalized",
+    cladup.stream_event(tool_result_raw, stream_opts)["tool_use_result"] == {"success": True},
 )
 check("noise stream skipped", cladup.stream_event({"type": "system"}, stream_opts) is None)
 check("synthetic no-response stream skipped", cladup.stream_event(NO_RESPONSE, stream_opts) is None)
+hook_raw = {
+    "type": "attachment",
+    "sessionId": "sid",
+    "uuid": "hook-uuid",
+    "attachment": {
+        "type": "hook_success",
+        "hookName": "SessionStart:startup",
+        "hookEvent": "SessionStart",
+        "toolUseID": "hook-id",
+        "content": "ok",
+        "stdout": "ok\n",
+        "stderr": "",
+        "exitCode": 0,
+    },
+}
+check("hook skipped without verbose", cladup.stream_event(hook_raw, stream_opts) is None)
+stream_opts.verbose = True
+check(
+    "hook normalized with verbose",
+    cladup.stream_event(hook_raw, stream_opts)
+    == {
+        "type": "system",
+        "subtype": "hook_response",
+        "hook_name": "SessionStart:startup",
+        "hook_event": "SessionStart",
+        "uuid": "hook-uuid",
+        "session_id": "sid",
+        "hook_id": "hook-id",
+        "output": "ok",
+        "stdout": "ok\n",
+        "stderr": "",
+        "exit_code": 0,
+        "outcome": "success",
+    },
+)
 synthetic = cladup.synthetic_assistant_event("sid", "answer", "2.1.173")
 check("synthetic assistant has text", cladup.assistant_text(synthetic) == "answer")
 check("synthetic assistant terminal", cladup.is_terminal_assistant(synthetic))

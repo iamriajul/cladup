@@ -224,6 +224,7 @@ class PrintOptions:
         self.fallback_model = ""
         self.max_budget_usd = ""
         self.permission_mode_seen = False
+        self.verbose = False
         self.passthrough: list[str] = []
         self.positionals: list[str] = []
         self.replay_events: list[dict] = []
@@ -652,6 +653,52 @@ def strip_trailing_resume_noops(path: str | None, min_records: int = 0) -> int:
     return removed
 
 
+def strip_resume_noops_since(path: str | None, min_records: int = 0) -> int:
+    if not path or not os.path.exists(path):
+        return 0
+    lines = []
+    records = []
+    try:
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped:
+                    lines.append(line)
+                    records.append(None)
+                    continue
+                lines.append(line)
+                records.append(json.loads(stripped))
+    except (OSError, json.JSONDecodeError):
+        return 0
+
+    keep = []
+    removed = 0
+    idx = 0
+    while idx < len(records):
+        if (
+            idx >= min_records
+            and idx + 1 < len(records)
+            and isinstance(records[idx], dict)
+            and isinstance(records[idx + 1], dict)
+            and is_meta_continue_record(records[idx])
+            and is_no_response_record(records[idx + 1])
+        ):
+            idx += 2
+            removed += 2
+            continue
+        keep.append(lines[idx])
+        idx += 1
+    if not removed:
+        return 0
+
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.writelines(keep)
+    except OSError:
+        return 0
+    return removed
+
+
 def is_terminal_assistant(rec: dict) -> bool:
     if rec.get("type") != "assistant":
         return False
@@ -675,6 +722,13 @@ def final_answer(records: list[dict]) -> str:
     return ""
 
 
+def final_terminal_record(records: list[dict]) -> dict | None:
+    for rec in reversed(records):
+        if is_terminal_assistant(rec):
+            return rec
+    return None
+
+
 def final_answer_from_path(path: str | None, offset: int) -> str:
     return final_answer(read_records(path)[offset:])
 
@@ -693,19 +747,126 @@ def is_tool_result_user(rec: dict) -> bool:
     )
 
 
-def stream_event(rec: dict, opts: PrintOptions) -> dict | None:
-    if is_noise(rec):
+def rec_session_id(rec: dict) -> str:
+    return rec.get("session_id") or rec.get("sessionId") or ""
+
+
+def rec_request_id(rec: dict) -> str:
+    return rec.get("request_id") or rec.get("requestId") or ""
+
+
+def normalize_message_event(rec: dict) -> dict | None:
+    message = rec.get("message")
+    if not isinstance(message, dict):
         return None
+    event = {"type": rec.get("type"), "message": message}
+    session_id = rec_session_id(rec)
+    request_id = rec_request_id(rec)
+    if rec.get("uuid"):
+        event["uuid"] = rec.get("uuid")
+    if rec.get("timestamp"):
+        event["timestamp"] = rec.get("timestamp")
+    if session_id:
+        event["session_id"] = session_id
+    if request_id:
+        event["request_id"] = request_id
+    if "parent_tool_use_id" in rec:
+        event["parent_tool_use_id"] = rec.get("parent_tool_use_id")
+    if "toolUseResult" in rec:
+        event["tool_use_result"] = rec.get("toolUseResult")
+    elif "tool_use_result" in rec:
+        event["tool_use_result"] = rec.get("tool_use_result")
+    return event
+
+
+def normalize_hook_event(rec: dict) -> dict | None:
+    attachment = rec.get("attachment")
+    if not isinstance(attachment, dict):
+        return None
+    kind = attachment.get("type")
+    if kind not in {
+        "hook_success",
+        "hook_non_blocking_error",
+        "hook_additional_context",
+        "async_hook_response",
+    }:
+        return None
+    event = {
+        "type": "system",
+        "subtype": "hook_response",
+        "hook_name": attachment.get("hookName"),
+        "hook_event": attachment.get("hookEvent"),
+        "uuid": rec.get("uuid"),
+        "session_id": rec_session_id(rec),
+    }
+    if attachment.get("toolUseID"):
+        event["hook_id"] = attachment.get("toolUseID")
+    if attachment.get("processId"):
+        event["hook_id"] = attachment.get("processId")
+    if "content" in attachment:
+        event["output"] = attachment.get("content")
+    elif "response" in attachment:
+        event["output"] = json.dumps(attachment.get("response") or {})
+    if "stdout" in attachment:
+        event["stdout"] = attachment.get("stdout")
+    if "stderr" in attachment:
+        event["stderr"] = attachment.get("stderr")
+    exit_code = attachment.get("exitCode")
+    if exit_code is not None:
+        event["exit_code"] = exit_code
+    event["outcome"] = "success" if exit_code in (None, 0) else "error"
+    return event
+
+
+def normalize_system_event(rec: dict) -> dict | None:
+    event = {
+        key: value
+        for key, value in rec.items()
+        if key
+        in {
+            "type",
+            "subtype",
+            "uuid",
+            "durationMs",
+            "messageCount",
+            "timestamp",
+            "level",
+        }
+    }
+    session_id = rec_session_id(rec)
+    if session_id:
+        event["session_id"] = session_id
+    if "durationMs" in event:
+        event["duration_ms"] = event.pop("durationMs")
+    if "messageCount" in event:
+        event["message_count"] = event.pop("messageCount")
+    return event if event.get("type") else None
+
+
+def stream_event(rec: dict, opts: PrintOptions) -> dict | None:
     if is_no_response_record(rec):
         return None
     if rec.get("type") == "assistant":
-        return rec if assistant_text(rec) or opts.include_partial_messages else None
+        message = rec.get("message") or {}
+        if message.get("content") or opts.include_partial_messages:
+            return normalize_message_event(rec)
+        return None
     if rec.get("type") == "user":
-        if opts.replay_user_messages or is_tool_result_user(rec):
-            return rec
+        if rec.get("isMeta"):
+            return None
+        return normalize_message_event(rec)
+    if rec.get("type") == "attachment":
+        if opts.verbose or opts.include_hook_events:
+            return normalize_hook_event(rec)
+        return None
+    if rec.get("type") == "system":
+        if opts.verbose or opts.include_hook_events:
+            return normalize_system_event(rec)
+        return None
+    if is_noise(rec):
         return None
     if opts.include_hook_events:
-        return rec
+        return normalize_system_event(rec) or rec
     return None
 
 
@@ -1164,6 +1325,8 @@ def parse_print_argv(argv: list[str]) -> PrintOptions:
                     opts.permission_mode_seen = True
                 if name == "--dangerously-skip-permissions":
                     opts.permission_mode_seen = True
+                if name == "--verbose":
+                    opts.verbose = True
                 opts.passthrough.extend(option_tokens(arg, values, inline_value))
             i = next_i
             continue
@@ -1290,16 +1453,30 @@ def build_launch_args(opts: PrintOptions, session_id: str) -> list[str]:
 
 
 def result_object(
-    session_id: str, answer: str, seconds: float, is_error: bool = False
+    session_id: str,
+    answer: str,
+    seconds: float,
+    is_error: bool = False,
+    terminal_rec: dict | None = None,
 ) -> dict:
-    return {
+    message = (terminal_rec or {}).get("message") or {}
+    event = {
         "type": "result",
         "subtype": "success" if not is_error else "error",
+        "is_error": is_error,
+        "api_error_status": (terminal_rec or {}).get("apiErrorStatus"),
         "session_id": session_id,
         "result": answer,
-        "is_error": is_error,
         "duration_ms": int(seconds * 1000),
     }
+    if message.get("stop_reason") is not None:
+        event["stop_reason"] = message.get("stop_reason")
+        event["terminal_reason"] = (
+            "completed" if message.get("stop_reason") == "end_turn" else message.get("stop_reason")
+        )
+    if message.get("usage") is not None:
+        event["usage"] = message.get("usage")
+    return event
 
 
 def synthetic_assistant_event(session_id: str, answer: str, version: str = "") -> dict:
@@ -1343,6 +1520,7 @@ def run_print_turn(opts: PrintOptions, argv0: str) -> int:
         datetime.datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
     )
     answer = ""
+    terminal_rec = None
     turn_error = False
     screen_fallback = False
     screen_fallback_version = ""
@@ -1364,10 +1542,9 @@ def run_print_turn(opts: PrintOptions, argv0: str) -> int:
                 path, _offset = changed_transcript(before, t0)
                 if path:
                     session_id = session_id_from_transcript(path)
-            # Claude can append synthetic resume/setup records while launching.
-            # Start watching only after the real prompt has been submitted.
-            strip_trailing_resume_noops(path, offset)
-            offset = len(read_records(path)) if path else 0
+            # Keep startup hook records visible, but remove Claude's synthetic
+            # resume no-op pair before it can become conversational context.
+            strip_resume_noops_since(path, offset)
             send_text(name, prompt)
             if stream and opts.replay_user_messages:
                 for rec in opts.replay_events:
@@ -1393,6 +1570,7 @@ def run_print_turn(opts: PrintOptions, argv0: str) -> int:
                     if rec.get("type") == "assistant" and not is_no_response_record(rec):
                         assistant_started = True
                     if is_terminal_assistant(rec):
+                        terminal_rec = rec
                         answer = assistant_text(rec)
                         turn_error = is_api_error_record(rec)
                         if stream:
@@ -1439,6 +1617,7 @@ def run_print_turn(opts: PrintOptions, argv0: str) -> int:
                 if assistant_started and stable >= STABLE_NEEDED and at_idle_prompt(screen):
                     answer = final_answer_from_path(path, offset)
                     if answer:
+                        terminal_rec = final_terminal_record(read_records(path)[offset:])
                         break
                     scraped = scrape_reply(screen)
                     if scraped:
@@ -1452,7 +1631,9 @@ def run_print_turn(opts: PrintOptions, argv0: str) -> int:
                 raise CwError(4, "timeout: turn exceeded MAX_TURN")
 
             if not answer:
-                answer = final_answer_from_path(path, offset)
+                terminal_rec = final_terminal_record(read_records(path)[offset:])
+                if terminal_rec:
+                    answer = assistant_text(terminal_rec)
             if not answer:
                 screen = capture(name)
                 screen_fallback_version = claude_version(screen)
@@ -1493,7 +1674,7 @@ def run_print_turn(opts: PrintOptions, argv0: str) -> int:
                 flush=True,
             )
         print(
-            json.dumps(result_object(session_id, answer, seconds, turn_error)),
+            json.dumps(result_object(session_id, answer, seconds, turn_error, terminal_rec)),
             flush=stream,
         )
     return 1 if turn_error else 0
